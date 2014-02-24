@@ -45,6 +45,16 @@ class RedshiftOutputTest < Test::Unit::TestCase
     redshift_schemaname test_schema
     file_type json
   ]
+  CONFIG_JSON_WITH_EXCLUDE_DEFAULT_COLUMNS = %[
+    #{CONFIG_BASE}
+    redshift_exclude_default_columns true
+    file_type json
+  ]
+  CONFIG_JSON_WITH_CONNECT_TIMEOUT = %[
+    #{CONFIG_BASE}
+    redshift_connect_timeout 1
+    file_type json
+  ]
   CONFIG_MSGPACK = %[
     #{CONFIG_BASE}
     file_type msgpack
@@ -100,6 +110,8 @@ class RedshiftOutputTest < Test::Unit::TestCase
     assert_equal "test_user", d.instance.redshift_user
     assert_equal "test_password", d.instance.redshift_password
     assert_equal "test_table", d.instance.redshift_tablename
+    assert_equal false, d.instance.redshift_exclude_default_columns
+    assert_equal 10, d.instance.redshift_connect_timeout
     assert_equal nil, d.instance.redshift_schemaname
     assert_equal "FILLRECORD ACCEPTANYDATE TRUNCATECOLUMNS", d.instance.redshift_copy_base_options
     assert_equal nil, d.instance.redshift_copy_options
@@ -110,6 +122,14 @@ class RedshiftOutputTest < Test::Unit::TestCase
   def test_configure_with_schemaname
     d = create_driver(CONFIG_JSON_WITH_SCHEMA)
     assert_equal "test_schema", d.instance.redshift_schemaname
+  end
+  def test_configure_with_connect_timeout
+    d = create_driver(CONFIG_JSON_WITH_CONNECT_TIMEOUT)
+    assert_equal 1, d.instance.redshift_connect_timeout
+  end
+  def test_configure_with_exclude_default_columns
+    d = create_driver(CONFIG_JSON_WITH_EXCLUDE_DEFAULT_COLUMNS)
+    assert_equal true, d.instance.redshift_exclude_default_columns
   end
   def test_configure_localtime
     d = create_driver(CONFIG_CSV.gsub(/ *utc */, ''))
@@ -216,10 +236,15 @@ class RedshiftOutputTest < Test::Unit::TestCase
       @return_keys = options[:return_keys] || ['key_a', 'key_b', 'key_c', 'key_d', 'key_e', 'key_f', 'key_g', 'key_h']
       @target_schema = options[:schemaname] || nil
       @target_table = options[:tablename] || 'test_table'
+      @exclude_default_columns = options[:exclude_default_columns] || false
     end
 
     def expected_column_list_query
-      if @target_schema
+      if @exclude_default_columns and !@target_schema.nil?
+        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_schema = '#{@target_schema}' and table_name = '#{@target_table}' and column_default is null/
+      elsif @exclude_default_columns and @target_schema.nil?
+        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_name = '#{@target_table}' and column_default is null/
+      elsif !@exclude_default_columns and !@target_schema.nil?
         /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_schema = '#{@target_schema}' and table_name = '#{@target_table}'/
       else
         /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_name = '#{@target_table}'/
@@ -227,7 +252,11 @@ class RedshiftOutputTest < Test::Unit::TestCase
     end
 
     def expected_copy_query
-      if @target_schema
+      if @exclude_default_columns and !@target_schema.nil?
+        /\Acopy #{@target_schema}.#{@target_table}\(#{@return_keys.join(",")}\) from/
+      elsif @exclude_default_columns and @target_schema.nil?
+        /\Acopy #{@target_table}\(#{@return_keys.join(",")}\) from/
+      elsif !@exclude_default_columns and !@target_schema.nil?
         /\Acopy #{@target_schema}.#{@target_table} from/
       else
         /\Acopy #{@target_table} from/
@@ -523,4 +552,35 @@ class RedshiftOutputTest < Test::Unit::TestCase
     emit_json(d_json)
     assert_equal true, d_json.run
   end
+
+  def test_write_with_json_fetch_column_with_exclude_default_columns
+    def PG.connect(dbinfo)
+      return PGConnectionMock.new(:exclude_default_columns => true)
+    end
+    setup_s3_mock(%[val_a\tval_b\t\t\t\t\t\t\n\t\tval_c\tval_d\t\t\t\t\n])
+    d_json = create_driver(CONFIG_JSON_WITH_EXCLUDE_DEFAULT_COLUMNS)
+    emit_json(d_json)
+    assert_equal true, d_json.run
+  end
+
+  def test_write_with_json_failed_due_to_connect_timeout
+    def PG.connect(dbinfo)
+      return Class.new do
+        def initialize(return_keys=[]); end
+        def exec(sql, &block)
+          error = PG::Error.new("redshift connection timeout limit exceeded")
+          raise error
+        end
+        def close; end
+      end.new
+    end
+    setup_s3_mock("")
+
+    d_json = create_driver(CONFIG_JSON_WITH_CONNECT_TIMEOUT)
+    emit_json(d_json)
+    assert_raise(PG::Error, "redshift connection timeout limit exceeded") {
+      assert_equal true, d_json.run
+    }
+  end
+
 end

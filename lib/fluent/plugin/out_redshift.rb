@@ -37,6 +37,8 @@ class RedshiftOutput < BufferedOutput
   config_param :redshift_schemaname, :string, :default => nil
   config_param :redshift_copy_base_options, :string , :default => "FILLRECORD ACCEPTANYDATE TRUNCATECOLUMNS"
   config_param :redshift_copy_options, :string , :default => nil
+  config_param :redshift_exclude_default_columns, :bool, :default => false
+  config_param :redshift_connect_timeout, :integer, :default => 10
   # file format
   config_param :file_type, :string, :default => nil  # json, tsv, csv, msgpack
   config_param :delimiter, :string, :default => nil
@@ -48,16 +50,18 @@ class RedshiftOutput < BufferedOutput
     @path = "#{@path}/" unless @path.end_with?('/') # append last slash
     @path = @path[1..-1] if @path.start_with?('/')  # remove head slash
     @utc = true if conf['utc']
+    @exclude_default_columns = true if conf['redshift_exclude_default_columns']
     @db_conf = {
       host:@redshift_host,
       port:@redshift_port,
       dbname:@redshift_dbname,
       user:@redshift_user,
-      password:@redshift_password
+      password:@redshift_password,
+      connect_timeout: @redshift_connect_timeout
     }
     @delimiter = determine_delimiter(@file_type) if @delimiter.nil? or @delimiter.empty?
     $log.debug format_log("redshift file_type:#{@file_type} delimiter:'#{@delimiter}'")
-    @copy_sql_template = "copy #{table_name_with_schema} from '%s' CREDENTIALS 'aws_access_key_id=#{@aws_key_id};aws_secret_access_key=%s' delimiter '#{@delimiter}' GZIP ESCAPE #{@redshift_copy_base_options} #{@redshift_copy_options};"
+    @copy_sql_template = "copy #{table_name_with_schema}%s from '%s' CREDENTIALS 'aws_access_key_id=#{@aws_key_id};aws_secret_access_key=%s' delimiter '#{@delimiter}' GZIP ESCAPE #{@redshift_copy_base_options} #{@redshift_copy_options};"
   end
 
   def start
@@ -112,7 +116,18 @@ class RedshiftOutput < BufferedOutput
 
     # copy gz on s3 to redshift
     s3_uri = "s3://#{@s3_bucket}/#{s3path}"
-    sql = @copy_sql_template % [s3_uri, @aws_sec_key]
+    columns = fetch_table_columns
+
+    unless columns
+      $log.error("aborting copy as columns could not be resolved")
+      return false # for debug
+    end
+
+    sql = if @exclude_default_columns
+        @copy_sql_template % ["(#{columns.join(",")})", s3_uri, @aws_sec_key]
+      else
+        @copy_sql_template % ["", s3_uri, @aws_sec_key]
+      end
     $log.debug  format_log("start copying. s3_uri=#{s3_uri}")
     conn = nil
     begin
@@ -202,24 +217,29 @@ class RedshiftOutput < BufferedOutput
   end
 
   def fetch_table_columns
-    conn = PG.connect(@db_conf)
+    conn = nil
     begin
+      conn = PG.connect(@db_conf)
       columns = nil
       conn.exec(fetch_columns_sql_with_schema) do |result|
         columns = result.collect{|row| row['column_name']}
       end
+      $log.info format_log("retrieved columns from redshift for table: #{@redshift_tablename}")
       columns
+    rescue PG::Error => e
+      $log.error format_log("failed to retrieve table columns from redshift for table: #{@redshift_tablename}"), :error=>e.to_s
+      raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
+      return false # for debug
     ensure
-      conn.close rescue nil
+      conn.close rescue nil if conn
     end
   end
 
   def fetch_columns_sql_with_schema
-    @fetch_columns_sql ||= if @redshift_schemaname
-                             "select column_name from INFORMATION_SCHEMA.COLUMNS where table_schema = '#{@redshift_schemaname}' and table_name = '#{@redshift_tablename}' order by ordinal_position;"
-                           else
-                             "select column_name from INFORMATION_SCHEMA.COLUMNS where table_name = '#{@redshift_tablename}' order by ordinal_position;"
-                           end
+    schema_name_sql = (@redshift_schemaname) ? "table_schema = '#{@redshift_schemaname}' and " : ""
+    default_column_sql = (@exclude_default_columns) ? " and column_default is null" : ""
+
+    @fetch_columns_sql ||= "select column_name from INFORMATION_SCHEMA.COLUMNS where #{schema_name_sql}table_name = '#{@redshift_tablename}'#{default_column_sql} order by ordinal_position;"   
   end
 
   def json_to_hash(json_text)
