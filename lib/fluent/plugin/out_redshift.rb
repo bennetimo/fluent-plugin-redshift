@@ -130,8 +130,9 @@ class RedshiftOutput < BufferedOutput
     
     columns = fetch_table_columns
 
+    table_with_schema = (@redshift_schemaname) ? "#{@redshift_schemaname}.#{@redshift_tablename}" : @redshift_tablename
+
     unless columns
-      table_with_schema = (@redshift_schemaname) ? "#{@redshift_schemaname}.#{@redshift_tablename}" : @redshift_tablename
       $log.error("aborting copy as columns could not be resolved for table #{table_with_schema}. s3_uri=#{s3_uri}")
       return false # for debug
     end
