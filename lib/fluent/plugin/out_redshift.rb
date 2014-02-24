@@ -218,21 +218,22 @@ class RedshiftOutput < BufferedOutput
 
   def fetch_table_columns
     conn = nil
-    begin
-      conn = PG.connect(@db_conf)
-      columns = nil
-      conn.exec(fetch_columns_sql_with_schema) do |result|
-        columns = result.collect{|row| row['column_name']}
+    @fetch_table_columns ||= 
+      begin
+        conn = PG.connect(@db_conf)
+        columns = nil
+        conn.exec(fetch_columns_sql_with_schema) do |result|
+          columns = result.collect{|row| row['column_name']}
+        end
+        $log.info format_log("retrieved columns from redshift for table: #{@redshift_tablename}")
+        columns
+      rescue PG::Error => e
+        $log.error format_log("failed to retrieve table columns from redshift for table: #{@redshift_tablename}"), :error=>e.to_s
+        raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
+        return nil # for debug
+      ensure
+        conn.close rescue nil if conn
       end
-      $log.info format_log("retrieved columns from redshift for table: #{@redshift_tablename}")
-      columns
-    rescue PG::Error => e
-      $log.error format_log("failed to retrieve table columns from redshift for table: #{@redshift_tablename}"), :error=>e.to_s
-      raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
-      return false # for debug
-    ensure
-      conn.close rescue nil if conn
-    end
   end
 
   def fetch_columns_sql_with_schema
