@@ -240,27 +240,17 @@ class RedshiftOutputTest < Test::Unit::TestCase
     end
 
     def expected_column_list_query
-      if @exclude_default_columns and !@target_schema.nil?
-        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_schema = '#{@target_schema}' and table_name = '#{@target_table}' and column_default is null/
-      elsif @exclude_default_columns and @target_schema.nil?
-        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_name = '#{@target_table}' and column_default is null/
-      elsif !@exclude_default_columns and !@target_schema.nil?
-        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_schema = '#{@target_schema}' and table_name = '#{@target_table}'/
-      else
-        /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where table_name = '#{@target_table}'/
-      end
+      schema_name = (@target_schema) ? "table_schema = '#{@target_schema}' and " : ""
+      default_column = (@exclude_default_columns) ? " and column_default is null" : ""
+
+      /\Aselect column_name from INFORMATION_SCHEMA.COLUMNS where #{schema_name}table_name = '#{@target_table}'#{default_column}/
     end
 
     def expected_copy_query
-      if @exclude_default_columns and !@target_schema.nil?
-        /\Acopy #{@target_schema}.#{@target_table}\(#{@return_keys.join(",")}\) from/
-      elsif @exclude_default_columns and @target_schema.nil?
-        /\Acopy #{@target_table}\(#{@return_keys.join(",")}\) from/
-      elsif !@exclude_default_columns and !@target_schema.nil?
-        /\Acopy #{@target_schema}.#{@target_table} from/
-      else
-        /\Acopy #{@target_table} from/
-      end
+      table_with_schema_name = (@target_schema) ? "#{@target_schema}.#{@target_table}" : "#{@target_table}"
+      table_with_column_names = (@exclude_default_columns) ? "#{table_with_schema_name}\\(#{@return_keys.join(",")}\\)" : table_with_schema_name
+
+      /\Acopy #{table_with_column_names} from/
     end
 
     def exec(sql, &block)
