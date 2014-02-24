@@ -104,22 +104,35 @@ class RedshiftOutput < BufferedOutput
       return false # for debug
     end
 
+    $log.debug format_log("gz file created.")
+
     # create a file path with time format
     s3path = create_s3path(@bucket, @path)
+    s3_uri = "s3://#{@s3_bucket}/#{s3path}"
+
+    $log.debug format_log("start copying gz file to s3. s3_uri=#{s3_uri}")
 
     # upload gz to s3
-    @bucket.objects[s3path].write(Pathname.new(tmp.path),
+    begin
+      @bucket.objects[s3path].write(Pathname.new(tmp.path),
                                   :acl => :bucket_owner_full_control)
+      $log.debug format_log("completed copying to s3. s3_uri=#{s3_uri}")
+    rescue => e
+      $log.error format_log("failed to upload file to S3. s3_uri=#{s3_uri}"), :error=>e.to_s
+      raise e
+      return false # for debug
+    end
 
     # close temp file
     tmp.close!
 
     # copy gz on s3 to redshift
-    s3_uri = "s3://#{@s3_bucket}/#{s3path}"
+    
     columns = fetch_table_columns
 
     unless columns
-      $log.error("aborting copy as columns could not be resolved")
+      table_with_schema = (@redshift_schemaname) ? "#{@redshift_schemaname}.#{@redshift_tablename}" : @redshift_tablename
+      $log.error("aborting copy as columns could not be resolved for table #{table_with_schema}. s3_uri=#{s3_uri}")
       return false # for debug
     end
 
@@ -128,12 +141,12 @@ class RedshiftOutput < BufferedOutput
       else
         @copy_sql_template % ["", s3_uri, @aws_sec_key]
       end
-    $log.debug  format_log("start copying. s3_uri=#{s3_uri}")
+    $log.debug  format_log("start copying to redshift table #{table_with_schema}. s3_uri=#{s3_uri}")
     conn = nil
     begin
       conn = PG.connect(@db_conf)
       conn.exec(sql)
-      $log.info format_log("completed copying to redshift. s3_uri=#{s3_uri}")
+      $log.info format_log("completed copying to redshift table #{table_with_schema}. s3_uri=#{s3_uri}")
     rescue PG::Error => e
       $log.error format_log("failed to copy data into redshift. s3_uri=#{s3_uri}"), :error=>e.to_s
       raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
