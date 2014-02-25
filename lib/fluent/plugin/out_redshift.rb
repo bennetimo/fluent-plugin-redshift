@@ -130,10 +130,10 @@ class RedshiftOutput < BufferedOutput
     
     columns = fetch_table_columns
 
-    table_with_schema = (@redshift_schemaname) ? "#{@redshift_schemaname}.#{@redshift_tablename}" : @redshift_tablename
+
 
     unless columns
-      $log.error("aborting copy as columns could not be resolved for table #{table_with_schema}. s3_uri=#{s3_uri}")
+      $log.error("aborting copy as columns could not be resolved for table #{table_name_with_schema}. s3_uri=#{s3_uri}")
       return false # for debug
     end
 
@@ -142,12 +142,12 @@ class RedshiftOutput < BufferedOutput
       else
         @copy_sql_template % ["", s3_uri, @aws_sec_key]
       end
-    $log.debug  format_log("start copying to redshift table #{table_with_schema}. s3_uri=#{s3_uri}")
+    $log.debug  format_log("start copying to redshift table #{table_name_with_schema}. s3_uri=#{s3_uri}")
     conn = nil
     begin
       conn = PG.connect(@db_conf)
       conn.exec(sql)
-      $log.info format_log("completed copying to redshift table #{table_with_schema}. s3_uri=#{s3_uri}")
+      $log.info format_log("completed copying to redshift table #{table_name_with_schema}. s3_uri=#{s3_uri}")
     rescue PG::Error => e
       $log.error format_log("failed to copy data into redshift. s3_uri=#{s3_uri}"), :error=>e.to_s
       raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
@@ -239,10 +239,10 @@ class RedshiftOutput < BufferedOutput
         conn.exec(fetch_columns_sql_with_schema) do |result|
           columns = result.collect{|row| row['column_name']}
         end
-        $log.info format_log("retrieved columns from redshift for table: #{@redshift_tablename}")
+        $log.info format_log("retrieved columns from redshift for table: #{table_name_with_schema}")
         columns
       rescue PG::Error => e
-        $log.error format_log("failed to retrieve table columns from redshift for table: #{@redshift_tablename}"), :error=>e.to_s
+        $log.error format_log("failed to retrieve table columns from redshift for table: #{table_name_with_schema}"), :error=>e.to_s
         raise e unless e.to_s =~ IGNORE_REDSHIFT_ERROR_REGEXP
         return nil # for debug
       ensure
